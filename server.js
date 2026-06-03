@@ -3,7 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
 const path = require('path');
-const db = require('./database');
+const { pool } = require('./database');
 const auth = require('./auth');
 
 const app = express();
@@ -14,15 +14,20 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, '../frontend')));
 
 // Middleware
-function authenticateChild(req, res, next) {
+async function authenticateChild(req, res, next) {
   const token = req.headers['authorization']?.replace('Bearer ', '');
   const childData = auth.verifyChildToken(token);
   if (!childData) return res.status(401).json({ error: 'Token invalide' });
-  db.get('SELECT id FROM children WHERE id = ?', [childData.childId], (err, child) => {
-    if (err || !child) return res.status(401).json({ error: 'Enfant supprimé' });
+
+  try {
+    const { rows } = await pool.query('SELECT id FROM children WHERE id = $1', [childData.childId]);
+    if (rows.length === 0) return res.status(401).json({ error: 'Enfant supprimé' });
     req.childId = childData.childId;
     next();
-  });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erreur base de données' });
+  }
 }
 
 function authenticateAdmin(req, res, next) {
@@ -35,30 +40,35 @@ function authenticateAdmin(req, res, next) {
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, '../frontend/index.html')));
 app.get('/parent', (req, res) => res.sendFile(path.join(__dirname, '../frontend/index.html')));
 
-// Générer code parent
-app.post('/api/pairing/generate', (req, res) => {
+// Générer code (parent)
+app.post('/api/pairing/generate', async (req, res) => {
   const pairingCode = crypto.randomInt(100000, 999999).toString();
   const deviceName = req.body.deviceName || 'Appareil Android';
   const childId = crypto.randomUUID();
-  db.run('INSERT INTO children (id, device_name, pairing_code) VALUES (?, ?, ?)',
-    [childId, deviceName, pairingCode], (err) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ childId, pairingCode, expiresIn: '10 minutes' });
-      setTimeout(() => {
-        db.run('UPDATE children SET pairing_code = NULL WHERE id = ? AND pairing_code = ?', [childId, pairingCode]);
-      }, 10 * 60 * 1000);
-    });
+  try {
+    await pool.query('INSERT INTO children (id, device_name, pairing_code) VALUES ($1, $2, $3)', [childId, deviceName, pairingCode]);
+    res.json({ childId, pairingCode, expiresIn: '10 minutes' });
+    setTimeout(async () => {
+      await pool.query('UPDATE children SET pairing_code = NULL WHERE id = $1 AND pairing_code = $2', [childId, pairingCode]);
+    }, 10 * 60 * 1000);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Validation enfant
-app.post('/api/pairing/validate-child', (req, res) => {
+app.post('/api/pairing/validate-child', async (req, res) => {
   const { pairingCode } = req.body;
-  db.get('SELECT id, device_name FROM children WHERE pairing_code = ?', [pairingCode], (err, child) => {
-    if (err || !child) return res.status(400).json({ error: 'Code invalide ou expiré' });
+  try {
+    const { rows } = await pool.query('SELECT id, device_name FROM children WHERE pairing_code = $1', [pairingCode]);
+    if (rows.length === 0) return res.status(400).json({ error: 'Code invalide ou expiré' });
+    const child = rows[0];
     const token = auth.generateChildToken(child.id, child.device_name);
-    db.run('UPDATE children SET pairing_code = NULL, last_seen = CURRENT_TIMESTAMP WHERE id = ?', [child.id]);
+    await pool.query('UPDATE children SET pairing_code = NULL, last_seen = CURRENT_TIMESTAMP WHERE id = $1', [child.id]);
     res.json({ token, childId: child.id });
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Admin login
@@ -72,109 +82,139 @@ app.post('/api/admin/login', (req, res) => {
 });
 
 // Routes enfant protégées
-app.post('/api/child/notifications', authenticateChild, (req, res) => {
+app.post('/api/child/notifications', authenticateChild, async (req, res) => {
   const { notifications } = req.body;
   if (!Array.isArray(notifications)) return res.status(400).json({ error: 'Format invalide' });
-  const stmt = db.prepare(`INSERT INTO notifications (child_id, app_name, package_name, title, content) VALUES (?, ?, ?, ?, ?)`);
-  notifications.forEach(n => stmt.run([req.childId, n.appName, n.packageName, n.title, n.content]));
-  stmt.finalize();
-  db.run('UPDATE children SET last_seen = CURRENT_TIMESTAMP WHERE id = ?', [req.childId]);
-  res.json({ success: true, count: notifications.length });
-});
-
-app.post('/api/child/ping', authenticateChild, (req, res) => {
-  db.run('UPDATE children SET last_seen = CURRENT_TIMESTAMP WHERE id = ?', [req.childId]);
-  res.json({ success: true });
-});
-
-app.post('/api/child/screen-time', authenticateChild, (req, res) => {
-  const { screenTime } = req.body;
-  db.run('UPDATE children SET screen_time = ? WHERE id = ?', [screenTime, req.childId]);
-  res.json({ success: true });
-});
-
-app.get('/api/child/rules', authenticateChild, (req, res) => {
-  db.all(
-    'SELECT * FROM blocking_rules WHERE child_id = ? AND is_active = 1',
-    [req.childId],
-    (err, rules) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ rules });
+  try {
+    for (const n of notifications) {
+      await pool.query(
+        'INSERT INTO notifications (child_id, app_name, package_name, title, content) VALUES ($1, $2, $3, $4, $5)',
+        [req.childId, n.appName, n.packageName, n.title, n.content]
+      );
     }
-  );
+    await pool.query('UPDATE children SET last_seen = CURRENT_TIMESTAMP WHERE id = $1', [req.childId]);
+    res.json({ success: true, count: notifications.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/child/ping', authenticateChild, async (req, res) => {
+  try {
+    await pool.query('UPDATE children SET last_seen = CURRENT_TIMESTAMP WHERE id = $1', [req.childId]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/child/screen-time', authenticateChild, async (req, res) => {
+  const { screenTime } = req.body;
+  try {
+    await pool.query('UPDATE children SET screen_time = $1 WHERE id = $2', [screenTime, req.childId]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/child/rules', authenticateChild, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM blocking_rules WHERE child_id = $1 AND is_active = 1', [req.childId]);
+    res.json({ rules: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Routes admin
-app.get('/api/admin/children', authenticateAdmin, (req, res) => {
-  db.all('SELECT id, device_name, paired_at, last_seen, is_active, screen_time FROM children ORDER BY paired_at DESC', (err, children) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ children });
-  });
+app.get('/api/admin/children', authenticateAdmin, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT id, device_name, paired_at, last_seen, is_active, screen_time FROM children ORDER BY paired_at DESC');
+    res.json({ children: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.get('/api/admin/children/:childId/notifications', authenticateAdmin, (req, res) => {
+app.get('/api/admin/children/:childId/notifications', authenticateAdmin, async (req, res) => {
   const { childId } = req.params;
-  db.all('SELECT * FROM notifications WHERE child_id = ? ORDER BY timestamp DESC LIMIT 100', [childId], (err, notifications) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ notifications });
-  });
+  try {
+    const { rows } = await pool.query('SELECT * FROM notifications WHERE child_id = $1 ORDER BY timestamp DESC LIMIT 100', [childId]);
+    res.json({ notifications: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.get('/api/admin/rules/:childId', authenticateAdmin, (req, res) => {
+app.get('/api/admin/rules/:childId', authenticateAdmin, async (req, res) => {
   const { childId } = req.params;
-  db.all('SELECT * FROM blocking_rules WHERE child_id = ? ORDER BY day_of_week, start_hour', [childId], (err, rules) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ rules });
-  });
+  try {
+    const { rows } = await pool.query('SELECT * FROM blocking_rules WHERE child_id = $1 ORDER BY day_of_week, start_hour', [childId]);
+    res.json({ rules: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.post('/api/admin/rules', authenticateAdmin, (req, res) => {
+app.post('/api/admin/rules', authenticateAdmin, async (req, res) => {
   const { childId, dayOfWeek, startHour, startMinute, endHour, endMinute, appPackage } = req.body;
-  db.run(`INSERT INTO blocking_rules (child_id, day_of_week, start_hour, start_minute, end_hour, end_minute, app_package)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`, [childId, dayOfWeek, startHour, startMinute, endHour, endMinute, appPackage], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ id: this.lastID, success: true });
-  });
+  try {
+    const { rows } = await pool.query(
+      'INSERT INTO blocking_rules (child_id, day_of_week, start_hour, start_minute, end_hour, end_minute, app_package) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
+      [childId, dayOfWeek, startHour, startMinute, endHour, endMinute, appPackage]
+    );
+    res.json({ id: rows[0].id, success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.put('/api/admin/rules/:ruleId', authenticateAdmin, (req, res) => {
+app.put('/api/admin/rules/:ruleId', authenticateAdmin, async (req, res) => {
   const { ruleId } = req.params;
   const { dayOfWeek, startHour, startMinute, endHour, endMinute, appPackage } = req.body;
-  db.run(
-    `UPDATE blocking_rules SET day_of_week = ?, start_hour = ?, start_minute = ?, end_hour = ?, end_minute = ?, app_package = ? WHERE id = ?`,
-    [dayOfWeek, startHour, startMinute, endHour, endMinute, appPackage, ruleId],
-    function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ success: true });
-    }
-  );
-});
-
-app.delete('/api/admin/rules/:ruleId', authenticateAdmin, (req, res) => {
-  db.run('DELETE FROM blocking_rules WHERE id = ?', [req.params.ruleId], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ deleted: this.changes });
-  });
-});
-
-app.put('/api/admin/notifications/:notifId/read', authenticateAdmin, (req, res) => {
-  db.run('UPDATE notifications SET is_read = 1 WHERE id = ?', [req.params.notifId], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
+  try {
+    await pool.query(
+      'UPDATE blocking_rules SET day_of_week = $1, start_hour = $2, start_minute = $3, end_hour = $4, end_minute = $5, app_package = $6 WHERE id = $7',
+      [dayOfWeek, startHour, startMinute, endHour, endMinute, appPackage, ruleId]
+    );
     res.json({ success: true });
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.delete('/api/admin/children/:childId', authenticateAdmin, (req, res) => {
+app.delete('/api/admin/rules/:ruleId', authenticateAdmin, async (req, res) => {
+  const { ruleId } = req.params;
+  try {
+    await pool.query('DELETE FROM blocking_rules WHERE id = $1', [ruleId]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/notifications/:notifId/read', authenticateAdmin, async (req, res) => {
+  const { notifId } = req.params;
+  try {
+    await pool.query('UPDATE notifications SET is_read = 1 WHERE id = $1', [notifId]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/admin/children/:childId', authenticateAdmin, async (req, res) => {
   const { childId } = req.params;
-  db.serialize(() => {
-    db.run('DELETE FROM notifications WHERE child_id = ?', [childId]);
-    db.run('DELETE FROM blocking_rules WHERE child_id = ?', [childId]);
-    db.run('DELETE FROM connection_logs WHERE child_id = ?', [childId]);
-    db.run('DELETE FROM children WHERE id = ?', [childId], function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ success: true });
-    });
-  });
+  try {
+    await pool.query('DELETE FROM notifications WHERE child_id = $1', [childId]);
+    await pool.query('DELETE FROM blocking_rules WHERE child_id = $1', [childId]);
+    await pool.query('DELETE FROM connection_logs WHERE child_id = $1', [childId]);
+    await pool.query('DELETE FROM children WHERE id = $1', [childId]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.listen(PORT, () => {

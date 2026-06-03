@@ -1,49 +1,67 @@
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
-const db = new sqlite3.Database(path.join(__dirname, 'parental.db'));
+const { Pool } = require('pg');
 
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS children (
-    id TEXT PRIMARY KEY,
-    device_name TEXT,
-    pairing_code TEXT,
-    paired_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    last_seen DATETIME,
-    is_active INTEGER DEFAULT 1
-  )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS blocking_rules (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    child_id TEXT,
-    day_of_week INTEGER,
-    start_hour INTEGER,
-    start_minute INTEGER,
-    end_hour INTEGER,
-    end_minute INTEGER,
-    app_package TEXT,
-    is_active INTEGER DEFAULT 1,
-    FOREIGN KEY(child_id) REFERENCES children(id)
-  )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS notifications (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    child_id TEXT,
-    app_name TEXT,
-    package_name TEXT,
-    title TEXT,
-    content TEXT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    is_read INTEGER DEFAULT 0,
-    FOREIGN KEY(child_id) REFERENCES children(id)
-  )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS connection_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    child_id TEXT,
-    event_type TEXT,
-    details TEXT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
-module.exports = db;
+const initTables = async () => {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS children (
+        id TEXT PRIMARY KEY,
+        device_name TEXT,
+        pairing_code TEXT,
+        paired_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_seen TIMESTAMP,
+        is_active INTEGER DEFAULT 1,
+        screen_time INTEGER DEFAULT 0
+      );
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS blocking_rules (
+        id SERIAL PRIMARY KEY,
+        child_id TEXT REFERENCES children(id) ON DELETE CASCADE,
+        day_of_week INTEGER,
+        start_hour INTEGER,
+        start_minute INTEGER,
+        end_hour INTEGER,
+        end_minute INTEGER,
+        app_package TEXT,
+        is_active INTEGER DEFAULT 1
+      );
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id SERIAL PRIMARY KEY,
+        child_id TEXT REFERENCES children(id) ON DELETE CASCADE,
+        app_name TEXT,
+        package_name TEXT,
+        title TEXT,
+        content TEXT,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        is_read INTEGER DEFAULT 0,
+        type TEXT DEFAULT 'incoming'
+      );
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS connection_logs (
+        id SERIAL PRIMARY KEY,
+        child_id TEXT REFERENCES children(id) ON DELETE CASCADE,
+        event_type TEXT,
+        details TEXT,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    console.log('✅ Tables PostgreSQL initialisées');
+  } catch (err) {
+    console.error('❌ Erreur initialisation tables', err);
+  } finally {
+    client.release();
+  }
+};
+
+initTables();
+
+module.exports = { pool, initTables };
