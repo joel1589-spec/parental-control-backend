@@ -2,7 +2,6 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
-const path = require('path');
 const { pool } = require('./database');
 const auth = require('./auth');
 
@@ -11,7 +10,6 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '../frontend')));
 
 // Middleware
 async function authenticateChild(req, res, next) {
@@ -36,11 +34,7 @@ function authenticateAdmin(req, res, next) {
   next();
 }
 
-// Routes publiques
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, '../frontend/index.html')));
-app.get('/parent', (req, res) => res.sendFile(path.join(__dirname, '../frontend/index.html')));
-
-// Générer code (parent)
+// Routes API (aucune route vers / ou /parent)
 app.post('/api/pairing/generate', async (req, res) => {
   const pairingCode = crypto.randomInt(100000, 999999).toString();
   const deviceName = req.body.deviceName || 'Appareil Android';
@@ -56,7 +50,6 @@ app.post('/api/pairing/generate', async (req, res) => {
   }
 });
 
-// Validation enfant
 app.post('/api/pairing/validate-child', async (req, res) => {
   const { pairingCode } = req.body;
   try {
@@ -71,7 +64,6 @@ app.post('/api/pairing/validate-child', async (req, res) => {
   }
 });
 
-// Admin login
 app.post('/api/admin/login', (req, res) => {
   const { password } = req.body;
   if (auth.verifyAdminPassword(password)) {
@@ -81,7 +73,6 @@ app.post('/api/admin/login', (req, res) => {
   }
 });
 
-// Routes enfant protégées
 app.post('/api/child/notifications', authenticateChild, async (req, res) => {
   const { notifications } = req.body;
   if (!Array.isArray(notifications)) return res.status(400).json({ error: 'Format invalide' });
@@ -127,7 +118,6 @@ app.get('/api/child/rules', authenticateChild, async (req, res) => {
   }
 });
 
-// Routes admin
 app.get('/api/admin/children', authenticateAdmin, async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT id, device_name, paired_at, last_seen, is_active, screen_time FROM children ORDER BY paired_at DESC');
@@ -218,5 +208,5 @@ app.delete('/api/admin/children/:childId', authenticateAdmin, async (req, res) =
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Serveur sur http://localhost:${PORT}`);
+  console.log(`🚀 API démarrée sur le port ${PORT}`);
 });
