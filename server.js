@@ -150,4 +150,21 @@ app.delete('/api/admin/children/:childId', authenticateAdmin, async (req, res) =
   res.json({ success: true });
 });
 
+// Route pour récupérer les règles (utilisée par l'application enfant)
+app.get('/api/child/rules', authenticateChild, async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM blocking_rules WHERE child_id = $1 AND is_active = 1', [req.childId]);
+  res.json({ rules: rows });
+});
+
+// Route pour recevoir la localisation
+app.post('/api/child/location', authenticateChild, async (req, res) => {
+  const { latitude, longitude, accuracy, battery_level, is_connected } = req.body;
+  // Stockez les données dans la table connection_logs ou une table dédiée
+  await pool.query(
+    'INSERT INTO connection_logs (child_id, event_type, details) VALUES ($1, $2, $3)',
+    [req.childId, 'location', JSON.stringify({ latitude, longitude, accuracy, battery_level, is_connected, timestamp: new Date().toISOString() })]
+  );
+  res.json({ success: true });
+});
+
 app.listen(PORT, () => console.log(`🚀 API démarrée sur le port ${PORT}`));
