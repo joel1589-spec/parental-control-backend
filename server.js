@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Middleware
+// ============ MIDDLEWARE ============
 async function authenticateChild(req, res, next) {
   const token = req.headers['authorization']?.replace('Bearer ', '');
   const childData = auth.verifyChildToken(token);
@@ -34,7 +34,10 @@ function authenticateAdmin(req, res, next) {
   next();
 }
 
-// Routes API (aucune route vers / ou /parent)
+// ============ ROUTES PUBLIQUES (aucune route HTML) ============
+// Le frontend est hébergé séparément, donc on ne sert plus de fichiers statiques.
+
+// ============ APPAIRAGE ============
 app.post('/api/pairing/generate', async (req, res) => {
   const pairingCode = crypto.randomInt(100000, 999999).toString();
   const deviceName = req.body.deviceName || 'Appareil Android';
@@ -64,6 +67,7 @@ app.post('/api/pairing/validate-child', async (req, res) => {
   }
 });
 
+// ============ ADMIN AUTH ============
 app.post('/api/admin/login', (req, res) => {
   const { password } = req.body;
   if (auth.verifyAdminPassword(password)) {
@@ -73,6 +77,7 @@ app.post('/api/admin/login', (req, res) => {
   }
 });
 
+// ============ ROUTES ENFANT PROTÉGÉES ============
 app.post('/api/child/notifications', authenticateChild, async (req, res) => {
   const { notifications } = req.body;
   if (!Array.isArray(notifications)) return res.status(400).json({ error: 'Format invalide' });
@@ -118,6 +123,7 @@ app.get('/api/child/rules', authenticateChild, async (req, res) => {
   }
 });
 
+// ============ ROUTES ADMIN PROTÉGÉES ============
 app.get('/api/admin/children', authenticateAdmin, async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT id, device_name, paired_at, last_seen, is_active, screen_time FROM children ORDER BY paired_at DESC');
@@ -207,6 +213,7 @@ app.delete('/api/admin/children/:childId', authenticateAdmin, async (req, res) =
   }
 });
 
+// ============ DÉMARRAGE ============
 app.listen(PORT, () => {
   console.log(`🚀 API démarrée sur le port ${PORT}`);
 });
