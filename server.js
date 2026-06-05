@@ -168,6 +168,23 @@ app.post('/api/child/location', authenticateChild, async (req, res) => {
 });
 
 
+app.get('/api/child/location/:childId', authenticateAdmin, async (req, res) => {
+  const { childId } = req.params;
+  try {
+    const { rows } = await pool.query(
+      'SELECT details FROM connection_logs WHERE child_id = $1 AND event_type = $2 ORDER BY timestamp DESC LIMIT 1',
+      [childId, 'location']
+    );
+    if (rows.length === 0) {
+      return res.json({ location: null });
+    }
+    const location = JSON.parse(rows[0].details);
+    res.json({ location });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.delete('/api/admin/reset-messages', authenticateAdmin, async (req, res) => {
   try {
