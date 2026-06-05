@@ -179,4 +179,14 @@ app.delete('/api/admin/reset-all', authenticateAdmin, async (req, res) => {
   }
 });
 
+app.delete('/api/admin/reset-messages', authenticateAdmin, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM notifications');
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => console.log(`🚀 API démarrée sur le port ${PORT}`));
