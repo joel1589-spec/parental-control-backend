@@ -167,6 +167,45 @@ app.post('/api/child/location', authenticateChild, async (req, res) => {
   res.json({ success: true });
 });
 
+// Route pour recevoir le temps d'écran détaillé (par application)
+app.post('/api/child/screen-time-detail', authenticateChild, async (req, res) => {
+  const { appName, durationSeconds } = req.body;
+  try {
+    // Insérer dans la table des logs
+    await pool.query(
+      `INSERT INTO screen_time_logs (child_id, app_name, duration_seconds, logged_at)
+       VALUES ($1, $2, $3, NOW())`,
+      [req.childId, appName, durationSeconds]
+    );
+    // Cumuler le temps total dans la table children (optionnel)
+    await pool.query('UPDATE children SET screen_time = screen_time + $1 WHERE id = $2', [durationSeconds, req.childId]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Route pour récupérer les top 5 applications (dernières 24h ou 7 jours)
+app.get('/api/admin/children/:childId/top-apps', authenticateAdmin, async (req, res) => {
+  const { childId } = req.params;
+  const { days = 7 } = req.query; // par défaut 7 jours
+  try {
+    const { rows } = await pool.query(
+      `SELECT app_name, SUM(duration_seconds) as total_seconds
+       FROM screen_time_logs
+       WHERE child_id = $1 AND logged_at > NOW() - INTERVAL '1 day' * $2
+       GROUP BY app_name
+       ORDER BY total_seconds DESC
+       LIMIT 5`,
+      [childId, days]
+    );
+    res.json({ apps: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 app.get('/api/child/location/:childId', authenticateAdmin, async (req, res) => {
   const { childId } = req.params;
