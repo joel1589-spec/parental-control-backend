@@ -167,4 +167,16 @@ app.post('/api/child/location', authenticateChild, async (req, res) => {
   res.json({ success: true });
 });
 
+app.delete('/api/admin/reset-all', authenticateAdmin, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM notifications');
+    await pool.query('DELETE FROM blocking_rules');
+    await pool.query('DELETE FROM children');
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => console.log(`🚀 API démarrée sur le port ${PORT}`));
